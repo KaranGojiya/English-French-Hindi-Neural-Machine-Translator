@@ -1,10 +1,11 @@
 import json
+import os
 import re
+import shutil
 
 import numpy as np
 import streamlit as st
 import tensorflow as tf
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.preprocessing.text import tokenizer_from_json
 
 MODEL_DIR = "saved_model"
@@ -87,6 +88,17 @@ def detokenize(s):
 
 
 # ---------- Load everything once ----------
+def weights_path(name):
+    """Keras 3 only reads '<name>.weights.h5'. If the file was saved/renamed as
+    '<name>_weights.h5', make a correctly named copy."""
+    good = f"{MODEL_DIR}/{name}.weights.h5"
+    old = f"{MODEL_DIR}/{name}_weights.h5"
+    if not os.path.exists(good) and os.path.exists(old):
+        shutil.copy(old, good)
+    return good
+
+
+
 @st.cache_resource
 def load_artifacts():
     with open(f"{MODEL_DIR}/config.json") as f:
@@ -103,18 +115,17 @@ def load_artifacts():
     enc_out, enc_state = encoder(tf.zeros((1, cfg["MAX_ENG_LEN"]), dtype=tf.int32))
     decoder(tf.zeros((1, 1), dtype=tf.int32), enc_state, enc_out)
 
-    encoder.load_weights(f"{MODEL_DIR}/encoder.weights.h5")
-    decoder.load_weights(f"{MODEL_DIR}/decoder.weights.h5")
+    encoder.load_weights(weights_path("encoder"))
+    decoder.load_weights(weights_path("decoder"))
     return cfg, eng_tok, fr_tok, encoder, decoder
 
 
 def translate(sentence, cfg, eng_tok, fr_tok, encoder, decoder):
-    sequence = eng_tok.texts_to_sequences([clean(sentence)])
-    sequence = pad_sequences(
-        sequence, maxlen=cfg["MAX_ENG_LEN"], padding="post", truncating="post"
-    )
-
-    encoder_outputs, decoder_hidden = encoder(sequence)
+    # IMPORTANT: no padding at inference. The attention layer has no source mask,
+    # so padded positions would soak up attention weight and wreck short inputs.
+    # Feeding only the real tokens gives attention nothing but real words.
+    ids = eng_tok.texts_to_sequences([clean(sentence)])[0][: cfg["MAX_ENG_LEN"]]
+    encoder_outputs, decoder_hidden = encoder(tf.constant([ids], dtype=tf.int32))
 
     start_token = fr_tok.word_index["<start>"]
     end_token = fr_tok.word_index["<end>"]
