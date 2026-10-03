@@ -122,7 +122,7 @@ def translate(sentence, cfg, eng_tok, fr_tok, encoder, decoder):
 
     result = []
     seen_bigrams = set()
-    prev = start_token
+    prev_word = "<start>"
     oov_id = fr_tok.word_index.get("<OOV>")
 
     for _ in range(cfg["MAX_FR_LEN"]):
@@ -130,11 +130,6 @@ def translate(sentence, cfg, eng_tok, fr_tok, encoder, decoder):
             decoder_input_word, decoder_hidden, encoder_outputs
         )
         logits = predictions[0].numpy()
-
-        # forbid any word pair that was already generated (stops loops)
-        for a, b in seen_bigrams:
-            if a == prev:
-                logits[b] = -1e9
         if oov_id is not None:
             logits[oov_id] = -1e9
 
@@ -142,9 +137,15 @@ def translate(sentence, cfg, eng_tok, fr_tok, encoder, decoder):
         if predicted_id == end_token:
             break
 
-        seen_bigrams.add((prev, predicted_id))
-        prev = predicted_id
-        result.append(fr_tok.index_word.get(predicted_id, ""))
+        word = fr_tok.index_word.get(predicted_id, "").replace("’", "'")
+
+        # the model is looping: treat a repeated word pair as the end
+        if (prev_word, word) in seen_bigrams:
+            break
+        seen_bigrams.add((prev_word, word))
+        prev_word = word
+
+        result.append(word)
         decoder_input_word = tf.expand_dims([predicted_id], 0)
 
     return detokenize(" ".join(result))
