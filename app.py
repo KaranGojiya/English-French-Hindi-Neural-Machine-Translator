@@ -1,6 +1,7 @@
 import json
 import re
 
+import numpy as np
 import streamlit as st
 import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -120,13 +121,29 @@ def translate(sentence, cfg, eng_tok, fr_tok, encoder, decoder):
     decoder_input_word = tf.expand_dims([start_token], 0)
 
     result = []
+    seen_bigrams = set()
+    prev = start_token
+    oov_id = fr_tok.word_index.get("<OOV>")
+
     for _ in range(cfg["MAX_FR_LEN"]):
         predictions, decoder_hidden, _ = decoder(
             decoder_input_word, decoder_hidden, encoder_outputs
         )
-        predicted_id = int(tf.argmax(predictions[0]).numpy())
+        logits = predictions[0].numpy()
+
+        # forbid any word pair that was already generated (stops loops)
+        for a, b in seen_bigrams:
+            if a == prev:
+                logits[b] = -1e9
+        if oov_id is not None:
+            logits[oov_id] = -1e9
+
+        predicted_id = int(np.argmax(logits))
         if predicted_id == end_token:
             break
+
+        seen_bigrams.add((prev, predicted_id))
+        prev = predicted_id
         result.append(fr_tok.index_word.get(predicted_id, ""))
         decoder_input_word = tf.expand_dims([predicted_id], 0)
 
