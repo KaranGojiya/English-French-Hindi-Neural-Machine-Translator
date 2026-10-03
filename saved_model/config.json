@@ -1,1 +1,3 @@
-{"ENG_VOCAB_SIZE": 14216, "FR_VOCAB_SIZE": 27130, "EMBEDDING_DIM": 256, "HIDDEN_UNITS": 512, "MAX_ENG_LEN": 15, "MAX_FR_LEN": 17}
+version https://git-lfs.github.com/spec/v1
+oid sha256:68d88e9cd1bb42f43f7c65c6262779d11ddec67854abf37b548d0f0319b559ee
+size 129
