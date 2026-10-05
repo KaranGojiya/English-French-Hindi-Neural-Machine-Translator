@@ -1,0 +1,13 @@
+{
+  "language": "Hindi",
+  "ENG_VOCAB_SIZE": 15000,
+  "TGT_VOCAB_SIZE": 20000,
+  "EMBEDDING_DIM": 256,
+  "HIDDEN_UNITS": 512,
+  "MAX_ENG_LEN": 25,
+  "MAX_TGT_LEN": 26,
+  "val_loss": 3.4074,
+  "test_loss": 3.4403,
+  "bleu_greedy": 9.93,
+  "bleu_beam": 10.74
+}
