@@ -4,16 +4,20 @@ A sequence-to-sequence translator built from scratch with **TensorFlow / Keras**
 
 ## Examples
 
+Real outputs of the exported models (beam search, width 4).
+
 | English | French | Hindi |
 |---|---|---|
 | I love you | Je t'aime. | मैं तुमसे प्यार करता हूँ |
-| I will go to school | J'irai à l'école. | |
-| I am going to school | | मैं स्कूल जा रहा हूँ |
-| Where are you? | Où êtes-vous ? | |
-| Where is the station? | | स्टेशन कहाँ है? |
-| How are you? | | आप कैसे हैं? |
-| Can you help me | | क्या आप मुझे मदद कर सकते हैं |
-| Who are you | | आप कौन हैं |
+| I will go to school | J'irai à l'école. | मैं स्कूल जाना चाहता हूँ ⚠️ |
+| I am going to school | Je vais à l'école. | मैं स्कूल जा रहा हूँ |
+| Where are you? | Où êtes-vous ? | तुम कहाँ हैं? ⚠️ |
+| Where is the station? | Où est la gare ? | स्टेशन कहाँ है? |
+| How are you? | Comment allez-vous ? | आप कैसे हैं? |
+| Can you help me | Tu peux m'aider ? | क्या आप मुझे मदद कर सकते हैं |
+| Who are you | Es-tu ? ⚠️ | आप कौन हैं |
+
+**⚠️ Not a correct translation.**
 
 ## App features
 
@@ -69,7 +73,7 @@ The text is lowercased and punctuation is separated for French too. Each model m
 | Model | Validation loss | Test loss | Test perplexity | BLEU (greedy) | BLEU (beam 4) |
 |---|---|---|---|---|---|
 | English → Hindi | 3.41 | 3.44 | 31.2 | 9.93 | **10.74** |
-| English → French | not evaluated yet | | | | |
+| English → French | 0.71 | 1.53 | - | - | - |
 
 How to read these numbers:
 
