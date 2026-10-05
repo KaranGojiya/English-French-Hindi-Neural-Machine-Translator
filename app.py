@@ -10,32 +10,54 @@ import tensorflow as tf
 from tensorflow.keras.preprocessing.text import tokenizer_from_json
 
 st.set_page_config(
-    page_title="English → French Translator",
-    page_icon="🇫🇷",
+    page_title="English Translator",
+    page_icon="🌐",
     layout="wide",
 )
 
-# =============================================================
-# Files (change these if yours are different)
-# =============================================================
-MODEL_DIR = "saved_model"
 MAX_CHARS = 300
 
-# Shown in the "Model performance" section.
-# TODO: put the final validation loss of the run you exported here
-# (it comes from the training log, e.g. "Epoch 6 | Val Loss: 0.7364").
-VALIDATION_LOSS = "0.74"
-
-EXAMPLES = [
-    "I will go to school",
-    "I want to go to school",
-    "Where are you?",
-    "I went to class",
-]
+# =============================================================
+# Language registry — one entry per trained model.
+# Each model lives in its own folder holding:
+#   config.json, eng_tokenizer.json, <target>_tokenizer.json,
+#   encoder.weights.h5, decoder.weights.h5
+# =============================================================
+LANGUAGES = {
+    "French": {
+        "flag": "🇫🇷",
+        "dir": "saved_model",
+        "tgt_tokenizer_file": "fr_tokenizer.json",
+        # Fallback when config.json has no val_loss of its own
+        # (from the training log, e.g. "Epoch 6 | Val Loss: 0.7364").
+        "val_loss": "0.74",
+        "capitalize_output": True,  # French/Latin script: capitalise first letter
+        "examples": [
+            "I will go to school",
+            "I want to go to school",
+            "Where are you?",
+            "I went to class",
+        ],
+    },
+    "Hindi": {
+        "flag": "🇮🇳",
+        "dir": "saved_model_hindi",
+        "tgt_tokenizer_file": "hin_tokenizer.json",
+        "val_loss": None,  # taken from the Hindi config.json ("val_loss" key)
+        "capitalize_output": False,  # Devanagari has no letter case
+        "examples": [
+            "I will go to school",
+            "What is your name?",
+            "Where are you?",
+            "I like to read books",
+        ],
+    },
+}
 
 
 # =============================================================
-# Model classes (must be identical to the training notebook)
+# Model classes (must be identical to the training notebook —
+# shared by both the French and the Hindi model)
 # =============================================================
 class Encoder(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim, hidden_units):
@@ -100,7 +122,7 @@ class Decoder(tf.keras.Model):
 
 
 # =============================================================
-# Text helpers (same cleaning as training)
+# Text helpers (same English cleaning as training)
 # =============================================================
 def clean(s):
     s = str(s).lower().strip()
@@ -109,52 +131,110 @@ def clean(s):
     return s
 
 
-def detokenize(s):
-    s = re.sub(r"\s+([.,])", r"\1", s)  # French keeps a space before ? and !
-    return s[:1].upper() + s[1:]
+def detokenize(s, lang):
+    if lang == "French":
+        s = re.sub(r"\s+([.,])", r"\1", s)  # French keeps a space before ? and !
+    else:
+        # Hindi: no space before any punctuation (incl. the danda "।")
+        s = re.sub(r"\s+([.,!?।])", r"\1", s)
+    if LANGUAGES[lang]["capitalize_output"] and s:
+        s = s[:1].upper() + s[1:]
+    return s
 
 
 # =============================================================
-# Load model, tokenizers and config
+# Load model, tokenizers and config (per language, cached)
 # =============================================================
-def weights_path(name):
+def weights_path(model_dir, name):
     """Keras 3 only reads '<name>.weights.h5'. If the file was saved or renamed
     as '<name>_weights.h5', make a correctly named copy."""
-    good = f"{MODEL_DIR}/{name}.weights.h5"
-    old = f"{MODEL_DIR}/{name}_weights.h5"
+    good = f"{model_dir}/{name}.weights.h5"
+    old = f"{model_dir}/{name}_weights.h5"
     if not os.path.exists(good) and os.path.exists(old):
         shutil.copy(old, good)
     return good
 
 
+def special_ids(tok, lang):
+    """Find the decoder's start/end token ids, tolerating a few spellings."""
+    wi = tok.word_index
+    start = wi.get("<start>") or wi.get("<sos>") or wi.get("<s>")
+    end = wi.get("<end>") or wi.get("<eos>") or wi.get("</s>")
+    if start is None or end is None:
+        raise KeyError(
+            f"The {lang} target tokenizer has no <start>/<end> tokens. "
+            "Add them when training (e.g. '<start> ' + sentence + ' <end>') "
+            "or tell the app which tokens you used."
+        )
+    return start, end
+
+
 @st.cache_resource(show_spinner="Loading model...")
-def load_assets():
-    with open(f"{MODEL_DIR}/config.json") as f:
+def load_assets(lang):
+    spec = LANGUAGES[lang]
+    model_dir = spec["dir"]
+
+    with open(f"{model_dir}/config.json") as f:
         cfg = json.load(f)
-    with open(f"{MODEL_DIR}/eng_tokenizer.json") as f:
+    with open(f"{model_dir}/eng_tokenizer.json") as f:
         eng_tok = tokenizer_from_json(f.read())
-    with open(f"{MODEL_DIR}/fr_tokenizer.json") as f:
-        fr_tok = tokenizer_from_json(f.read())
+    with open(f"{model_dir}/{spec['tgt_tokenizer_file']}") as f:
+        tgt_tok = tokenizer_from_json(f.read())
+
+    # The French config calls them FR_VOCAB_SIZE / MAX_FR_LEN,
+    # the Hindi config calls them TGT_VOCAB_SIZE / MAX_TGT_LEN.
+    tgt_vocab = cfg.get("TGT_VOCAB_SIZE", cfg.get("FR_VOCAB_SIZE"))
+    max_tgt_len = cfg.get("MAX_TGT_LEN", cfg.get("MAX_FR_LEN"))
+    if tgt_vocab is None or max_tgt_len is None:
+        raise KeyError(
+            f"{model_dir}/config.json must define the target vocabulary size "
+            "and max target length (TGT_VOCAB_SIZE/MAX_TGT_LEN or "
+            "FR_VOCAB_SIZE/MAX_FR_LEN)."
+        )
+    cfg["_TGT_VOCAB_SIZE"] = tgt_vocab
+    cfg["_MAX_TGT_LEN"] = max_tgt_len
 
     encoder = Encoder(cfg["ENG_VOCAB_SIZE"], cfg["EMBEDDING_DIM"], cfg["HIDDEN_UNITS"])
-    decoder = Decoder(cfg["FR_VOCAB_SIZE"], cfg["EMBEDDING_DIM"], cfg["HIDDEN_UNITS"])
+    decoder = Decoder(tgt_vocab, cfg["EMBEDDING_DIM"], cfg["HIDDEN_UNITS"])
 
     # Subclassed models must be built (called once) before loading weights
     enc_out, enc_state = encoder(tf.zeros((1, cfg["MAX_ENG_LEN"]), dtype=tf.int32))
     decoder(tf.zeros((1, 1), dtype=tf.int32), enc_state, enc_out)
 
-    encoder.load_weights(weights_path("encoder"))
-    decoder.load_weights(weights_path("decoder"))
-    n_params = encoder.count_params() + decoder.count_params()
-    return cfg, eng_tok, fr_tok, encoder, decoder, n_params
+    encoder.load_weights(weights_path(model_dir, "encoder"))
+    decoder.load_weights(weights_path(model_dir, "decoder"))
 
+    start_id, end_id = special_ids(tgt_tok, lang)
+    n_params = encoder.count_params() + decoder.count_params()
+    return cfg, eng_tok, tgt_tok, encoder, decoder, start_id, end_id, n_params
+
+
+# =============================================================
+# Sidebar: language picker first (the model loads lazily, so a
+# missing Hindi folder never breaks the French model)
+# =============================================================
+def on_language_change():
+    st.session_state["result"] = None
+
+
+with st.sidebar:
+    lang = st.radio(
+        "Target language",
+        list(LANGUAGES),
+        format_func=lambda x: f"{LANGUAGES[x]['flag']} {x}",
+        on_change=on_language_change,
+    )
+
+spec = LANGUAGES[lang]
 
 try:
-    cfg, eng_tok, fr_tok, encoder, decoder, N_PARAMS = load_assets()
+    (cfg, eng_tok, tgt_tok, encoder, decoder,
+     START_ID, END_ID, N_PARAMS) = load_assets(lang)
 except Exception as exc:
     st.error(
-        "The model could not be loaded. Check that the saved_model folder holds "
-        "config.json, eng_tokenizer.json, fr_tokenizer.json, encoder.weights.h5 and "
+        f"The {lang} model could not be loaded. Check that the `{spec['dir']}` "
+        f"folder holds config.json, eng_tokenizer.json, "
+        f"{spec['tgt_tokenizer_file']}, encoder.weights.h5 and "
         "decoder.weights.h5, and that requirements.txt matches the TensorFlow "
         "version used for training."
     )
@@ -162,9 +242,9 @@ except Exception as exc:
     st.stop()
 
 MAX_ENG_LEN = cfg["MAX_ENG_LEN"]
-MAX_FR_LEN = cfg["MAX_FR_LEN"]
+MAX_TGT_LEN = cfg["_MAX_TGT_LEN"]
 OOV_ENG = eng_tok.word_index.get(eng_tok.oov_token, 1)
-OOV_FR = fr_tok.word_index.get(fr_tok.oov_token)
+OOV_TGT = tgt_tok.word_index.get(tgt_tok.oov_token)
 
 
 # =============================================================
@@ -182,27 +262,26 @@ def translate(sentence):
     # so padded positions would soak up attention weight and wreck short inputs.
     encoder_outputs, decoder_hidden = encoder(tf.constant([ids], dtype=tf.int32))
 
-    start_token = fr_tok.word_index["<start>"]
-    end_token = fr_tok.word_index["<end>"]
-    decoder_input_word = tf.expand_dims([start_token], 0)
+    decoder_input_word = tf.expand_dims([START_ID], 0)
 
     rows, seen_bigrams, prev_word, stopped_early = [], set(), "<start>", False
+    word_col = f"{lang} word"
 
-    for _ in range(MAX_FR_LEN):
+    for _ in range(MAX_TGT_LEN):
         predictions, decoder_hidden, attention = decoder(
             decoder_input_word, decoder_hidden, encoder_outputs
         )
         logits = predictions[0].numpy()
-        if OOV_FR is not None:
-            logits[OOV_FR] = -1e9
+        if OOV_TGT is not None:
+            logits[OOV_TGT] = -1e9
 
         probs = np.exp(logits - logits.max())
         probs /= probs.sum()
         predicted_id = int(np.argmax(logits))
-        if predicted_id == end_token:
+        if predicted_id == END_ID:
             break
 
-        word = fr_tok.index_word.get(predicted_id, "").replace("’", "'")
+        word = tgt_tok.index_word.get(predicted_id, "").replace("’", "'")
 
         # the model is looping: treat a repeated word pair as the end
         if (prev_word, word) in seen_bigrams:
@@ -214,7 +293,7 @@ def translate(sentence):
         attn = attention.numpy().reshape(-1)
         rows.append(
             {
-                "French word": word,
+                word_col: word,
                 "Looked at (English)": tokens[int(attn.argmax())],
                 "Attention (%)": float(attn.max() * 100),
                 "Confidence (%)": float(probs[predicted_id] * 100),
@@ -222,10 +301,10 @@ def translate(sentence):
         )
         decoder_input_word = tf.expand_dims([predicted_id], 0)
 
-    words = [r["French word"] for r in rows]
+    words = [r[word_col] for r in rows]
     return {
         "text": sentence,
-        "translation": detokenize(" ".join(words)),
+        "translation": detokenize(" ".join(words), lang),
         "rows": rows,
         "avg_conf": float(np.mean([r["Confidence (%)"] for r in rows])) if rows else 0.0,
         "n_words": n_words,
@@ -246,16 +325,16 @@ st.session_state.setdefault("text", "")
 st.session_state.setdefault("result", None)
 
 # =============================================================
-# Sidebar
+# Sidebar (rest of it)
 # =============================================================
 with st.sidebar:
     st.header("How to use")
     st.markdown(
-        """
+        f"""
         1. Type an English sentence, or click one of the examples.
         2. Press **Translate**.
-        3. Read the French translation. The table beside it shows which English
-           word each French word was built from.
+        3. Read the {lang} translation. The table beside it shows which English
+           word each {lang} word was built from.
         """
     )
     st.header("How it works")
@@ -265,7 +344,7 @@ with st.sidebar:
            turned into a number (a Keras tokenizer with a
            {cfg["ENG_VOCAB_SIZE"]:,}-word English vocabulary).
         2. A **GRU encoder** reads the English words.
-        3. A **GRU decoder** writes French one word at a time. At every step,
+        3. A **GRU decoder** writes {lang} one word at a time. At every step,
            **Bahdanau attention** lets it look back at the English words that
            matter most.
         4. It stops when it writes the end token (or starts repeating itself).
@@ -286,10 +365,10 @@ with st.sidebar:
 # =============================================================
 # Header and input
 # =============================================================
-st.title("🇫🇷 English → French Translator")
+st.title(f"{spec['flag']} English → {lang} Translator")
 st.caption(
-    "Type an English sentence and a GRU encoder–decoder with attention "
-    "translates it into French."
+    f"Type an English sentence and a GRU encoder–decoder with attention "
+    f"translates it into {lang}."
 )
 st.divider()
 
@@ -302,9 +381,9 @@ st.text_area(
 )
 
 st.caption("Try an example:")
-example_cols = st.columns(len(EXAMPLES))
-for i, (col, text) in enumerate(zip(example_cols, EXAMPLES)):
-    col.button(text, on_click=use_example, args=(text,), key=f"example_{i}")
+example_cols = st.columns(len(spec["examples"]))
+for i, (col, text) in enumerate(zip(example_cols, spec["examples"])):
+    col.button(text, on_click=use_example, args=(text,), key=f"{lang}_example_{i}")
 
 if st.button("🔍 Translate", type="primary"):
     cleaned = " ".join(st.session_state["text"].split())
@@ -340,7 +419,7 @@ else:
 
     with left:
         st.subheader("Translation")
-        st.success(f"🇫🇷  **{result['translation'] or '(no output)'}**")
+        st.success(f"{spec['flag']}  **{result['translation'] or '(no output)'}**")
 
         m1, m2, m3 = st.columns(3)
         m1.metric("English words read", result["n_words"])
@@ -364,7 +443,7 @@ else:
             )
             st.caption(
                 "“Looked at” is the English word the decoder paid most attention "
-                "to when it wrote that French word."
+                f"to when it wrote that {lang} word."
             )
 
 # =============================================================
@@ -374,17 +453,26 @@ st.divider()
 st.subheader("Model performance")
 st.caption(
     "A translator has no star-style accuracy. Quality is tracked with validation "
-    "loss: the average cross-entropy per French word on sentences it never trained "
+    f"loss: the average cross-entropy per {lang} word on sentences it never trained "
     "on (lower is better)."
 )
 
+val_loss = cfg.get("val_loss", spec["val_loss"])
 metrics = {
-    "Validation loss": VALIDATION_LOSS,
+    "Validation loss": val_loss if val_loss is not None else "—",
     "Parameters": f"{N_PARAMS / 1e6:.1f} M",
     "English vocabulary": f"{cfg['ENG_VOCAB_SIZE']:,} words",
-    "French vocabulary": f"{cfg['FR_VOCAB_SIZE']:,} words",
+    f"{lang} vocabulary": f"{cfg['_TGT_VOCAB_SIZE']:,} words",
     "Max sentence length": f"{MAX_ENG_LEN} words",
 }
+# Optional metrics that some configs carry (the Hindi one does)
+if cfg.get("test_loss") is not None:
+    metrics["Test loss"] = cfg["test_loss"]
+if cfg.get("bleu_greedy") is not None:
+    metrics["BLEU (greedy)"] = cfg["bleu_greedy"]
+if cfg.get("bleu_beam") is not None:
+    metrics["BLEU (beam)"] = cfg["bleu_beam"]
+
 cols = st.columns(len(metrics))
 for col, (name, value) in zip(cols, metrics.items()):
     col.metric(name, value)
@@ -400,11 +488,11 @@ with st.expander("Model architecture"):
         f"  + Dense ({cfg['HIDDEN_UNITS']}) on decoder state -> tanh -> Dense (1)\n"
         f"  Softmax over the English words -> context vector\n"
         f"\n"
-        f"DECODER (one French word per step)\n"
-        f"  Embedding ({cfg['FR_VOCAB_SIZE']:,} words x {cfg['EMBEDDING_DIM']})\n"
+        f"DECODER (one {lang} word per step)\n"
+        f"  Embedding ({cfg['_TGT_VOCAB_SIZE']:,} words x {cfg['EMBEDDING_DIM']})\n"
         f"  Concatenate [context vector, word embedding]\n"
         f"  GRU ({cfg['HIDDEN_UNITS']} units)\n"
-        f"  Dense ({cfg['FR_VOCAB_SIZE']:,}) -> next French word",
+        f"  Dense ({cfg['_TGT_VOCAB_SIZE']:,}) -> next {lang} word",
         language="text",
     )
 
