@@ -1,132 +1,158 @@
-# English → French Neural Machine Translator
+# English → French & Hindi Neural Machine Translator
 
-A sequence-to-sequence translator built with **TensorFlow/Keras**, using a GRU encoder–decoder with **Bahdanau (additive) attention**, served through a **Streamlit** web app.
+A sequence-to-sequence translator built from scratch with **TensorFlow / Keras** (GRU encoder–decoder with **Bahdanau attention** and **beam search**), served through a **Streamlit** web app. Pick French or Hindi, type an English sentence, and see the translation together with a word-by-word view of which English word the model was looking at.
 
-## Demo examples
+## Examples
 
-| English | French (model output) |
-|---|---|
-| I will go to school | J'irai à l'école. |
-| I went to class | Je suis allé à la classe. |
-| You want to go out | Tu veux sortir. |
-| I love you | Je t'aime. |
+| English | French | Hindi |
+|---|---|---|
+| I love you | Je t'aime. | मैं तुमसे प्यार करता हूँ |
+| I will go to school | J'irai à l'école. | |
+| I am going to school | | मैं स्कूल जा रहा हूँ |
+| Where are you? | Où êtes-vous ? | |
+| Where is the station? | | स्टेशन कहाँ है? |
+| How are you? | | आप कैसे हैं? |
+| Can you help me | | क्या आप मुझे मदद कर सकते हैं |
+| Who are you | | आप कौन हैं |
+
+## App features
+
+- **Language switch** (French / Hindi). Each model is loaded only when it is used.
+- **Beam search** (width 4) with a no-repeat-trigram rule.
+- **Word-by-word table**: for every output word, the English word the decoder attended to most, the attention weight and the model's confidence.
+- **Reliability warnings** for unknown vocabulary, low confidence and over-long input.
+- **Model performance panel** that reads each model's own `config.json` (loss, BLEU, parameters, vocabulary sizes) and an architecture view.
 
 ## Model
 
+Both languages use the same architecture and the same code (`app.py`).
+
 | Component | Details |
 |---|---|
-| Encoder | Embedding (256) → GRU (512), returns all outputs and final state |
-| Attention | Bahdanau additive attention over encoder outputs |
-| Decoder | Embedding (256) → concat(context, embedding) → GRU (512) → Dense(vocab) |
-| Training | Teacher forcing, Adam, masked sparse categorical cross-entropy (padding ignored) |
-| Inference | Greedy decoding, starts at `<start>`, stops at `<end>` |
+| Encoder | Embedding (256) → GRU (512, returns all outputs and the final state) |
+| Attention | Bahdanau (additive) attention over the encoder outputs, with a source mask for padding |
+| Decoder | Embedding (256) → concat(context vector, embedding) → GRU (512) → Dense(vocabulary) |
+| Regularisation | Dropout 0.3 on embeddings and decoder output, gradient clipping 1.0 |
+| Training | Teacher forcing, Adam (lr 1e-3, halved when validation stalls), batch 128, early stopping (patience 3) with the best weights restored |
+| Loss | Cross-entropy averaged over **real words only** (padding excluded) |
+| Decoding | Beam search (width 4, length penalty 0.6), no padding at inference, `<OOV>` never output |
 
-**Data**
-- 150,000 English–French sentence pairs sampled from `english_french.csv`
-- Filtered to English sentences of 1–10 words and French sentences of 1–12 words
-- 80/20 train/validation split (120,000 / 30,000)
-- Lowercased, with punctuation split into separate tokens
-- Vocabularies built with the Keras `Tokenizer` (English and French separately)
-
-**Result** (6 epochs, batch size 64)
-
-| Epoch | Train loss | Val loss |
+| | English → French | English → Hindi |
 |---|---|---|
-| 1 | 1.9779 | 1.5587 |
-| 3 | 0.8027 | 0.8424 |
-| 6 | 0.3582 | 0.7364 |
+| English vocabulary | 14,216 | 15,000 (capped; covers 95.9% of word occurrences) |
+| Target vocabulary | 27,130 | 20,000 (capped; covers 96.7% of word occurrences) |
+| Max sentence length (source / target) | 15 / 17 | 25 / 26 |
+| Parameters | 28.2 M | 22.9 M |
+
+## Data and preprocessing (Hindi)
+
+Source: `Dataset_English_Hindi.csv`.
+
+| Step | Pairs |
+|---|---|
+| Raw rows | 130,476 |
+| After removing missing values and duplicates | 127,375 |
+| After filtering | **95,064** |
+| Train / validation / test | 89,360 / 2,852 / 2,852 |
+
+Cleaning and filtering:
+
+- Unicode NFC normalisation, quote normalisation, removal of invisible joiners, Devanagari digits → ASCII digits.
+- Sentence-final `.` → `।`, and punctuation (`. ! ? , ; : । " ( )`) split into separate tokens.
+- Kept only pairs with 1–25 tokens per side, a Hindi/English length ratio between 0.4 and 2.5, a Devanagari Hindi side and an English side without Devanagari.
+- Vocabulary capped with the Keras `Tokenizer(num_words=…)`; rarer words become `<OOV>`.
+
+The text is lowercased and punctuation is separated for French too. Each model must be given text cleaned **exactly** as it was cleaned for training, which is why `app.py` has a separate cleaning function per language.
+
+## Results
+
+| Model | Validation loss | Test loss | Test perplexity | BLEU (greedy) | BLEU (beam 4) |
+|---|---|---|---|---|---|
+| English → Hindi | 3.41 | 3.44 | 31.2 | 9.93 | **10.74** |
+| English → French | not evaluated yet | | | | |
+
+How to read these numbers:
+
+- **Loss** is the average cross-entropy per word on sentences the model never trained on (lower is better); `exp(loss)` is the perplexity.
+- **BLEU** (0–100, measured on 300 held-out test sentences) compares the output with a single human translation. It is strict and under-rates correct translations that are worded differently, so it is best used to compare model versions.
+- The Hindi test set is the same noisy mix of long web and government text as the training data, so these scores say little about short everyday sentences, which the model handles much better (see the examples above).
+- Beam search beats greedy decoding by about 0.8 BLEU and fixes several greedy mistakes.
+
+## Known limitations
+
+- **Short, simple, correctly spelled sentences work best.** Input is limited to 15 (French) or 25 (Hindi) words; the rest is cut off.
+- Words that were not in the training vocabulary are treated as unknown.
+- **Hindi:** formal and informal "you" (आप / तुम) and verb agreement are sometimes wrong (for example "Where do you live?" → "तुम कहाँ रहते हैं?"). Some sentences repeat a word ("I will come next day" → "मैं अगले दिन मैं आऊँगा") or use the wrong construction ("I am hungry" → "मैं भूख लगी हूँ"). The training data is mostly long, noisy text with few conversational sentences.
+- **French:** short phrases without a verb can be mistranslated ("Near the sea" → "Ferme la mer."), and some words can be dropped ("Tom is my brother" → "Mon frère.").
+- This is a small model trained from scratch. It is a learning and portfolio project, not a replacement for a professional translator.
 
 ## Project structure
 
 ```
-project/
-├── app.py                  # Streamlit app (model classes + inference + UI)
+.
+├── app.py                     # Streamlit app (models, decoding and UI)
 ├── requirements.txt
 ├── README.md
-├── English_to_French.ipynb # Training notebook
+├── notebooks/
+│   ├── English_to_French.ipynb
+│   └── English_to_Hindi.ipynb
 └── saved_model/
-    ├── encoder.weights.h5
-    ├── decoder.weights.h5
-    ├── eng_tokenizer.json
-    ├── fr_tokenizer.json
-    └── config.json
+|   ├── fr/
+|   │   ├── config.json
+|   │   ├── eng_tokenizer.json
+|   │   ├── fr_tokenizer.json
+|   │   ├── encoder.weights.h5
+|   │   └── decoder.weights.h5
+└── saved_model_hindi/
+    ├── hi/
+    |   ├── config.json
+    |   ├── eng_tokenizer.json
+    |   ├── hin_tokenizer.json
+    |   ├── encoder.weights.h5
+    |   └── decoder.weights.h5
 ```
+
+Keras 3 only reads weight files whose names end in `.weights.h5`. If yours are named `encoder_weights.h5` / `decoder_weights.h5`, the app makes correctly named copies on first load.
 
 ## Setup
 
 ```bash
 python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-> **Important:** use the same TensorFlow/Keras version that you trained with. Weights saved with Keras 3 (`.weights.h5`) need Keras 3 to load. In Colab, run `print(tf.__version__)` and pin that exact version in `requirements.txt` (for example `tensorflow==2.19.0`).
-
-## Exporting the trained model from the notebook
-
-Run this at the end of the training notebook, then unzip the download into `saved_model/`:
-
-```python
-import os, json, shutil
-
-os.makedirs("saved_model", exist_ok=True)
-
-encoder.save_weights("saved_model/encoder.weights.h5")
-decoder.save_weights("saved_model/decoder.weights.h5")
-
-with open("saved_model/eng_tokenizer.json", "w") as f:
-    f.write(eng_tokenizer.to_json())
-with open("saved_model/fr_tokenizer.json", "w") as f:
-    f.write(fr_tokenizer.to_json())
-
-config = {
-    "ENG_VOCAB_SIZE": ENG_VOCAB_SIZE,
-    "FR_VOCAB_SIZE": FR_VOCAB_SIZE,
-    "EMBEDDING_DIM": EMBEDDING_DIM,
-    "HIDDEN_UNITS": HIDDEN_UNITS,
-    "MAX_ENG_LEN": MAX_ENG_LEN,
-    "MAX_FR_LEN": MAX_FR_LEN,
-}
-with open("saved_model/config.json", "w") as f:
-    json.dump(config, f)
-
-shutil.make_archive("saved_model", "zip", "saved_model")
-
-from google.colab import files
-files.download("saved_model.zip")
-```
-
-## Run the app
-
-```bash
 streamlit run app.py
 ```
 
 Then open the local URL shown in the terminal (usually http://localhost:8501).
 
-## Important notes
+> **Use the same TensorFlow/Keras version that trained the models.** Weights saved with Keras 3 (`.weights.h5`) need Keras 3 to load. In Colab, run `print(tf.__version__)` and pin that exact version in `requirements.txt`.
 
-- **Training and inference must use the same preprocessing.** `app.py` uses the same `clean()` function as the notebook (lowercase, punctuation split into tokens). If you change it in one place, change it in the other and retrain.
-- **Model classes must match the notebook.** If you add dropout, an attention mask or change layer sizes, update `Encoder`, `BahdanauAttention` and `Decoder` in `app.py` and re-export the weights.
-- **Subclassed Keras models must be built before loading weights.** `load_artifacts()` handles this by calling both models once on dummy input.
+## Training and exporting a model
 
-## Limitations
+1. Open the notebook in Google Colab and set `CSV_PATH`.
+2. Run all cells. Every tunable setting (vocabulary caps, dropout, batch size, patience) is in the first code cell.
+3. The last cell saves the weights, tokenizers and `config.json` (which also stores the loss and BLEU scores shown in the app), then reloads them into fresh models and stops with an error if anything differs. When it prints `EXPORT OK`, unzip the download into `saved_model/<language code>/`.
 
-- Trained on short sentences: input is limited to **10 English words**, and longer input is truncated.
-- Works best on complete, simple sentences. Short noun phrases (for example "Near the sea") can be mistranslated because they are rare in the training data.
-- Words not seen in training become `<OOV>`, which lowers translation quality.
-- Greedy decoding only, with no beam search.
-- Output is not a substitute for a professional translation.
+## Adding another language
 
-## Possible improvements
+1. Train a model with the notebook and export it into `saved_model/<code>/`.
+2. Add an entry to the `LANGUAGES` dictionary in `app.py` with its folder, a cleaning function that matches the training cleaning, a detokenizer and a few example sentences.
 
-- Beam search decoding
-- Attention masking for padded positions
-- Dropout and label smoothing to reduce overfitting
-- BLEU score evaluation on the validation set
-- Subword tokenization (BPE/SentencePiece) to handle rare words
-- Attention heatmap visualization in the Streamlit UI
+## Deployment notes
+
+The weight files are large (the French decoder is 93 MB and the Hindi decoder 72 MB, about 225 MB for everything). GitHub rejects files over 100 MB, so use **Git LFS** for `*.h5` or host the weights on Hugging Face Hub if the vocabulary grows.
+
+## Ideas for improvement
+
+- More and cleaner conversational data (for example Tatoeba, or the short sentences of the IIT Bombay corpus).
+- Subword tokenisation (SentencePiece / BPE) instead of whole words.
+- Evaluate the French model with the same BLEU and test-loss cells.
+- A Transformer model for comparison.
 
 ## Tech stack
 
-Python · TensorFlow/Keras · Streamlit · pandas · scikit-learn
+Python · TensorFlow / Keras · Streamlit · pandas · scikit-learn · NLTK (BLEU)
+
+## Author
+
+Developed by **Karan Gojiya** · [GitHub](https://github.com/KaranGojiya) · [LinkedIn](https://www.linkedin.com/in/karan-gojiya)
